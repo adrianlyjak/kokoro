@@ -9,7 +9,6 @@
 #   "misaki[en]>=0.7.6",
 #   "numpy==1.26.4",
 #   "scipy",
-#   "torchaudio",
 #   "transformers",
 # ]
 # ///

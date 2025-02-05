@@ -6,6 +6,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from kokoro.custom_stft import CustomSTFT
+
 
 # https://github.com/yl4579/StyleTTS2/blob/main/Modules/utils.py
 def init_weights(m, mean=0.0, std=0.01):
@@ -288,7 +290,7 @@ class Generator(nn.Module):
         self.ups.apply(init_weights)
         self.conv_post.apply(init_weights)
         self.reflection_pad = nn.ReflectionPad1d((1, 0))
-        self.stft = TorchSTFT(filter_length=gen_istft_n_fft, hop_length=gen_istft_hop_size, win_length=gen_istft_n_fft)
+        self.stft = CustomSTFT(filter_length=gen_istft_n_fft, hop_length=gen_istft_hop_size, win_length=gen_istft_n_fft)
 
     def forward(self, x, s, f0):
         with torch.no_grad():
