@@ -56,21 +56,34 @@ class TextEncoder(nn.Module):
         self.lstm = nn.LSTM(
             channels, channels // 2, 1, batch_first=True, bidirectional=True
         )
+        self.hidden_size = channels // 2
 
     def forward(self, x, input_lengths, m):
         x = self.embedding(x)  # [B, T, emb]
         x = x.transpose(1, 2)  # [B, emb, T]
         x.masked_fill_(m.unsqueeze(1), 0.0)
+
         for c in self.cnn:
             x = c(x)
             x.masked_fill_(m.unsqueeze(1), 0.0)
+
         x = x.transpose(1, 2)  # [B, T, chn]
-        x = nn.utils.rnn.pack_padded_sequence(
-            x, input_lengths, batch_first=True, enforce_sorted=False
+
+        # Create sequence mask for LSTM
+        batch_size = x.size(0)
+        max_length = x.size(1)
+        seq_mask = (
+            torch.arange(max_length, device=x.device)[None, :] < input_lengths[:, None]
         )
-        self.lstm.flatten_parameters()
-        x, _ = self.lstm(x)
-        x, _ = nn.utils.rnn.pad_packed_sequence(x, batch_first=True)
+
+        # Initialize LSTM states
+        h0 = torch.zeros(2, batch_size, self.hidden_size, device=x.device)
+        c0 = torch.zeros(2, batch_size, self.hidden_size, device=x.device)
+
+        # Run LSTM with mask
+        x, _ = self.lstm(x * seq_mask.unsqueeze(-1), (h0, c0))
+        x = x * seq_mask.unsqueeze(-1)  # Apply mask to output
+
         x = x.transpose(-1, -2)
         x_pad = torch.zeros([x.shape[0], x.shape[1], m.shape[-1]], device=x.device)
         x_pad[:, :, : x.shape[-1]] = x
@@ -133,19 +146,30 @@ class ProsodyPredictor(nn.Module):
         )
         self.F0_proj = nn.Conv1d(d_hid // 2, 1, 1, 1, 0)
         self.N_proj = nn.Conv1d(d_hid // 2, 1, 1, 1, 0)
+        self.hidden_size = d_hid // 2
 
     def forward(self, texts, style, text_lengths, alignment, m):
         d = self.text_encoder(texts, style, text_lengths, m)
-        x = nn.utils.rnn.pack_padded_sequence(
-            d, text_lengths, batch_first=True, enforce_sorted=False
+
+        # Create sequence mask
+        batch_size = d.size(0)
+        max_length = d.size(1)
+        seq_mask = (
+            torch.arange(max_length, device=d.device)[None, :] < text_lengths[:, None]
         )
-        m = m.to(text_lengths.device).unsqueeze(1)
-        self.lstm.flatten_parameters()
-        x, _ = self.lstm(x)
-        x, _ = nn.utils.rnn.pad_packed_sequence(x, batch_first=True)
-        x_pad = torch.zeros([x.shape[0], m.shape[-1], x.shape[-1]])
+
+        # Initialize LSTM states
+        h0 = torch.zeros(2, batch_size, self.hidden_size, device=d.device)
+        c0 = torch.zeros(2, batch_size, self.hidden_size, device=d.device)
+
+        # Run LSTM with mask
+        x, _ = self.lstm(d * seq_mask.unsqueeze(-1), (h0, c0))
+        x = x * seq_mask.unsqueeze(-1)
+
+        x_pad = torch.zeros([x.shape[0], m.shape[-1], x.shape[-1]], device=x.device)
         x_pad[:, : x.shape[1], :] = x
-        x = x_pad.to(x.device)
+        x = x_pad
+
         duration = self.duration_proj(nn.functional.dropout(x, 0.5, training=False))
         en = d.transpose(-1, -2) @ alignment
         return duration.squeeze(-1), en
@@ -167,6 +191,7 @@ class DurationEncoder(nn.Module):
     def __init__(self, sty_dim, d_model, nlayers, dropout=0.1):
         super().__init__()
         self.lstms = nn.ModuleList()
+        self.hidden_size = d_model // 2
         for _ in range(nlayers):
             self.lstms.append(
                 nn.LSTM(
@@ -191,6 +216,14 @@ class DurationEncoder(nn.Module):
         x.masked_fill_(masks.unsqueeze(-1).transpose(0, 1), 0.0)
         x = x.transpose(0, 1)
         x = x.transpose(-1, -2)
+
+        # Create sequence mask once
+        batch_size = text_lengths.size(0)
+        max_length = x.size(-1)
+        seq_mask = (
+            torch.arange(max_length, device=x.device)[None, :] < text_lengths[:, None]
+        )
+
         for block in self.lstms:
             if isinstance(block, AdaLayerNorm):
                 x = block(x.transpose(-1, -2), style).transpose(-1, -2)
@@ -198,12 +231,15 @@ class DurationEncoder(nn.Module):
                 x.masked_fill_(masks.unsqueeze(-1).transpose(-1, -2), 0.0)
             else:
                 x = x.transpose(-1, -2)
-                x = nn.utils.rnn.pack_padded_sequence(
-                    x, text_lengths, batch_first=True, enforce_sorted=False
-                )
-                block.flatten_parameters()
-                x, _ = block(x)
-                x, _ = nn.utils.rnn.pad_packed_sequence(x, batch_first=True)
+
+                # Initialize LSTM states
+                h0 = torch.zeros(2, batch_size, self.hidden_size, device=x.device)
+                c0 = torch.zeros(2, batch_size, self.hidden_size, device=x.device)
+
+                # Run LSTM with mask
+                x, _ = block(x * seq_mask.unsqueeze(-1), (h0, c0))
+                x = x * seq_mask.unsqueeze(-1)
+
                 x = F.dropout(x, p=self.dropout, training=False)
                 x = x.transpose(-1, -2)
                 x_pad = torch.zeros(
@@ -211,6 +247,7 @@ class DurationEncoder(nn.Module):
                 )
                 x_pad[:, :, : x.shape[-1]] = x
                 x = x_pad
+
         return x.transpose(-1, -2)
 
 
