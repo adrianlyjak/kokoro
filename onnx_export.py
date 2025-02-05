@@ -29,10 +29,8 @@ style_dim = 256  # Total style dimension (128 + 128) based on ref_s splitting
 
 # Create dummy inputs
 dummy_seq_length = 12
-input_ids = torch.zeros((batch_size, context_length), dtype=torch.long)
-input_ids[0, :dummy_seq_length] = torch.LongTensor(
-    [0] + [1] * (dummy_seq_length - 2) + [0]
-)
+input_ids = torch.zeros((batch_size, dummy_seq_length), dtype=torch.long)
+input_ids[0, :] = torch.LongTensor([0] + [1] * (dummy_seq_length - 2) + [0])
 
 # Input lengths tensor
 input_lengths = torch.LongTensor([dummy_seq_length])
