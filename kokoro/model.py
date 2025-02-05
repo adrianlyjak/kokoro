@@ -62,16 +62,13 @@ class KModelInner(nn.Module):
         ref_s: torch.FloatTensor,  # [B, style_dim]
         speed: Number = 1,
     ) -> tuple[torch.FloatTensor, torch.LongTensor]:  # audio, pred_dur
-        # Create attention mask (keeping original implementation)
+        # Create attention mask without device movement
         text_mask = (
-            torch.arange(input_lengths.max())
+            torch.arange(input_lengths.max(), device=input_ids.device)
             .unsqueeze(0)
             .expand(input_lengths.shape[0], -1)
-            .type_as(input_lengths)
         )
-        text_mask = torch.gt(text_mask + 1, input_lengths.unsqueeze(1)).to(
-            input_ids.device
-        )
+        text_mask = torch.gt(text_mask + 1, input_lengths.unsqueeze(1))
 
         # BERT encoding
         bert_dur = self.bert(input_ids, attention_mask=(~text_mask).int())
@@ -94,7 +91,9 @@ class KModelInner(nn.Module):
         pred_aln_trg = torch.zeros(
             (input_ids.shape[1], indices.shape[0]), device=input_ids.device
         )
-        pred_aln_trg[indices, torch.arange(indices.shape[0])] = 1
+        pred_aln_trg[
+            indices, torch.arange(indices.shape[0], device=input_ids.device)
+        ] = 1
         pred_aln_trg = pred_aln_trg.unsqueeze(0)
 
         # Final generation
@@ -224,7 +223,6 @@ class KModel(nn.Module):
             self.model.context_length,
         )
 
-        # Prepare inputs exactly as in original
         input_ids = torch.LongTensor([[0, *input_ids, 0]]).to(self.device)
         input_lengths = torch.LongTensor([input_ids.shape[-1]]).to(self.device)
         ref_s = ref_s.to(self.device)
