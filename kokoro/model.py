@@ -25,35 +25,95 @@ class KModelConfig:
     n_mels: int
     plbert: Dict
     istftnet: Dict
+    vocab: Dict[str, int]
 
 
 class KModelInner(nn.Module):
-    def __init__(self, config: KModelConfig):
+    REPO_ID = "hexgrad/Kokoro-82M"
+
+    def __init__(self, config: Optional[str] = None, model_path: Optional[str] = None):
         super().__init__()
-        self.bert = CustomAlbert(
-            AlbertConfig(vocab_size=config.n_token, **config.plbert)
+
+        # Load config
+        if not config:
+            logger.debug("No config provided, downloading from HF")
+            config = hf_hub_download(repo_id=self.REPO_ID, filename="config.json")
+
+        with open(config, "r", encoding="utf-8") as r:
+            config_dict = json.load(r)
+            logger.debug(f"Loaded config: {config_dict}")
+
+        self.config = KModelConfig(
+            n_token=config_dict["n_token"],
+            hidden_dim=config_dict["hidden_dim"],
+            style_dim=config_dict["style_dim"],
+            n_layer=config_dict["n_layer"],
+            max_dur=config_dict["max_dur"],
+            dropout=config_dict["dropout"],
+            text_encoder_kernel_size=config_dict["text_encoder_kernel_size"],
+            n_mels=config_dict["n_mels"],
+            plbert=config_dict["plbert"],
+            istftnet=config_dict["istftnet"],
+            vocab=config_dict["vocab"],
         )
-        self.bert_encoder = nn.Linear(self.bert.config.hidden_size, config.hidden_dim)
+
+        # Initialize model components
+        self.bert = CustomAlbert(
+            AlbertConfig(vocab_size=self.config.n_token, **self.config.plbert)
+        )
+        self.bert_encoder = nn.Linear(
+            self.bert.config.hidden_size, self.config.hidden_dim
+        )
         self.context_length = self.bert.config.max_position_embeddings
         self.predictor = ProsodyPredictor(
-            style_dim=config.style_dim,
-            d_hid=config.hidden_dim,
-            nlayers=config.n_layer,
-            max_dur=config.max_dur,
-            dropout=config.dropout,
+            style_dim=self.config.style_dim,
+            d_hid=self.config.hidden_dim,
+            nlayers=self.config.n_layer,
+            max_dur=self.config.max_dur,
+            dropout=self.config.dropout,
         )
         self.text_encoder = TextEncoder(
-            channels=config.hidden_dim,
-            kernel_size=config.text_encoder_kernel_size,
-            depth=config.n_layer,
-            n_symbols=config.n_token,
+            channels=self.config.hidden_dim,
+            kernel_size=self.config.text_encoder_kernel_size,
+            depth=self.config.n_layer,
+            n_symbols=self.config.n_token,
         )
         self.decoder = Decoder(
-            dim_in=config.hidden_dim,
-            style_dim=config.style_dim,
-            dim_out=config.n_mels,
-            **config.istftnet,
+            dim_in=self.config.hidden_dim,
+            style_dim=self.config.style_dim,
+            dim_out=self.config.n_mels,
+            **self.config.istftnet,
         )
+        self.load_weights(model_path)
+
+    def load_weights(self, model_path: Optional[str] = None):
+        """Load weights from a .pth file or download from HuggingFace"""
+        if not model_path:
+            logger.debug("No model path provided, downloading from HF")
+            model_path = hf_hub_download(
+                repo_id=self.REPO_ID, filename="kokoro-v1_0.pth"
+            )
+
+        state_dict = torch.load(model_path, map_location="cpu", weights_only=True)
+
+        component_map = {
+            "bert": self.bert,
+            "bert_encoder": self.bert_encoder,
+            "predictor": self.predictor,
+            "text_encoder": self.text_encoder,
+            "decoder": self.decoder,
+        }
+
+        for key, inner_dict in state_dict.items():
+            if key in component_map:
+                try:
+                    component_map[key].load_state_dict(inner_dict)
+                except:
+                    logger.debug(f"Retrying {key} load with modified keys")
+                    inner_dict = {k[7:]: v for k, v in inner_dict.items()}
+                    component_map[key].load_state_dict(inner_dict, strict=False)
+            else:
+                logger.debug(f"Unexpected key in state dict: {key}")
 
     def forward(
         self,
@@ -108,93 +168,26 @@ class KModelInner(nn.Module):
 
 class KModel(nn.Module):
     """
-    KModel is a torch.nn.Module with 2 main responsibilities:
-    1. Init weights, downloading config.json + model.pth from HF if needed
-    2. forward(phonemes: str, ref_s: FloatTensor) -> (audio: FloatTensor)
+    KModel is a torch.nn.Module wrapper around KModelInner that handles:
+    1. Converting phonemes to input_ids using the model's vocab
+    2. Managing device placement and inference
 
     You likely only need one KModel instance, and it can be reused across
     multiple KPipelines to avoid redundant memory allocation.
 
     Unlike KPipeline, KModel is language-blind.
-
-    KModel stores self.vocab and thus knows how to map phonemes -> input_ids,
-    so there is no need to repeatedly download config.json outside of KModel.
     """
 
-    REPO_ID = "hexgrad/Kokoro-82M"
+    # Expose REPO_ID from inner model for pipeline compatibility
+    REPO_ID = KModelInner.REPO_ID
 
-    def __init__(
-        self, config: Union[Dict, str, None] = None, model: Optional[str] = None
-    ):
+    def __init__(self, config: Optional[str] = None, model: Optional[str] = None):
         super().__init__()
-        if not isinstance(config, dict):
-            if not config:
-                logger.debug("No config provided, downloading from HF")
-                config = hf_hub_download(repo_id=KModel.REPO_ID, filename="config.json")
-            with open(config, "r", encoding="utf-8") as r:
-                config = json.load(r)
-                logger.debug(f"Loaded config: {config}")
-        self.vocab = config["vocab"]
+        self.model = KModelInner(config, model)
 
-        # Create inner model
-        inner_config = KModelConfig(
-            n_token=config["n_token"],
-            hidden_dim=config["hidden_dim"],
-            style_dim=config["style_dim"],
-            n_layer=config["n_layer"],
-            max_dur=config["max_dur"],
-            dropout=config["dropout"],
-            text_encoder_kernel_size=config["text_encoder_kernel_size"],
-            n_mels=config["n_mels"],
-            plbert=config["plbert"],
-            istftnet=config["istftnet"],
-        )
-        self.model = KModelInner(inner_config)
-
-        # Load weights - exactly as in original
-        if not model:
-            model = hf_hub_download(repo_id=KModel.REPO_ID, filename="kokoro-v1_0.pth")
-
-        state_dict = torch.load(model, map_location="cpu", weights_only=True)
-        for key, inner_dict in state_dict.items():
-            # Map to the corresponding inner model component
-            if key == "bert":
-                try:
-                    self.model.bert.load_state_dict(inner_dict)
-                except:
-                    logger.debug(f"Did not load {key} from state_dict")
-                    inner_dict = {k[7:]: v for k, v in inner_dict.items()}
-                    self.model.bert.load_state_dict(inner_dict, strict=False)
-            elif key == "bert_encoder":
-                try:
-                    self.model.bert_encoder.load_state_dict(inner_dict)
-                except:
-                    logger.debug(f"Did not load {key} from state_dict")
-                    inner_dict = {k[7:]: v for k, v in inner_dict.items()}
-                    self.model.bert_encoder.load_state_dict(inner_dict, strict=False)
-            elif key == "predictor":
-                try:
-                    self.model.predictor.load_state_dict(inner_dict)
-                except:
-                    logger.debug(f"Did not load {key} from state_dict")
-                    inner_dict = {k[7:]: v for k, v in inner_dict.items()}
-                    self.model.predictor.load_state_dict(inner_dict, strict=False)
-            elif key == "text_encoder":
-                try:
-                    self.model.text_encoder.load_state_dict(inner_dict)
-                except:
-                    logger.debug(f"Did not load {key} from state_dict")
-                    inner_dict = {k[7:]: v for k, v in inner_dict.items()}
-                    self.model.text_encoder.load_state_dict(inner_dict, strict=False)
-            elif key == "decoder":
-                try:
-                    self.model.decoder.load_state_dict(inner_dict)
-                except:
-                    logger.debug(f"Did not load {key} from state_dict")
-                    inner_dict = {k[7:]: v for k, v in inner_dict.items()}
-                    self.model.decoder.load_state_dict(inner_dict, strict=False)
-            else:
-                logger.debug(f"Unexpected key in state dict: {key}")
+    @property
+    def vocab(self):
+        return self.model.config.vocab
 
     @property
     def device(self):
@@ -237,4 +230,5 @@ class KModel(nn.Module):
 
         if return_output:
             return self.Output(audio=audio, pred_dur=pred_dur)
-        return audio
+        else:
+            return audio

@@ -9,17 +9,16 @@
 #   "misaki[en]>=0.7.6",
 #   "numpy==1.26.4",
 #   "scipy",
-#   "torch",
+#   "torchaudio",
 #   "transformers",
 # ]
 # ///
-from kokoro import KModel
 import time
 import torch
+from kokoro.model import KModelInner
 import onnx
-from torch.export import Dim
 
-model = KModel(None, None).eval()
+model = KModelInner().eval()
 
 print(model)
 
@@ -27,49 +26,51 @@ print(model)
 batch_size = 1
 context_length = 512  # Based on position embeddings size
 style_dim = 256  # Total style dimension (128 + 128) based on ref_s splitting
-embedding_dim = 128  # From the model architecture
 
-# Create dummy inputs with proper padding to context_length
+# Create dummy inputs
 dummy_seq_length = 12
-input_ids = torch.zeros(
-    (batch_size, context_length), dtype=torch.long
-)  # Initialize with padding
+input_ids = torch.zeros((batch_size, context_length), dtype=torch.long)
 input_ids[0, :dummy_seq_length] = torch.LongTensor(
     [0] + [1] * (dummy_seq_length - 2) + [0]
-)  # Add content
+)
+
+# Input lengths tensor
+input_lengths = torch.LongTensor([dummy_seq_length])
 
 # Style reference tensor
-ref_s = torch.randn(batch_size, style_dim)  # [batch_size, 256]
+ref_s = torch.randn(batch_size, style_dim)
 
 # Test the inputs
 start_time = time.time()
-print("trying dummy inputs")
+print("Trying dummy inputs")
 print(f"input_ids shape: {input_ids.shape}")
+print(f"input_lengths shape: {input_lengths.shape}")
 print(f"ref_s shape: {ref_s.shape}")
-# Use named arguments to match the model's expectations
-output = model(phonemes=input_ids, ref_s=ref_s)
-print(f"time for dummy inputs: {time.time() - start_time}")
+
+output = model(input_ids=input_ids, input_lengths=input_lengths, ref_s=ref_s, speed=1.0)
+print(f"Time for dummy inputs: {time.time() - start_time}")
 
 # Define dynamic axes
 dynamic_axes = {
-    "phonemes": {0: "batch", 1: "sequence"},
+    "input_ids": {0: "batch", 1: "sequence"},
+    "input_lengths": {0: "batch"},
     "ref_s": {0: "batch"},
-    "output": {0: "batch"},
+    "audio": {0: "batch", 1: "sequence"},
+    "pred_dur": {0: "batch", 1: "sequence"},
 }
 
 print("Starting ONNX export...")
 try:
     torch.onnx.export(
         model,
-        ({"phonemes": input_ids, "ref_s": ref_s},),  # Keep dict format for named params
+        (input_ids, input_lengths, ref_s, 1.0),  # Inputs as positional arguments
         "kokoro.onnx",
-        input_names=["phonemes", "ref_s"],
-        output_names=["output"],
+        input_names=["input_ids", "input_lengths", "ref_s", "speed"],
+        output_names=["audio", "pred_dur"],
         dynamic_axes=dynamic_axes,
         opset_version=20,
         export_params=True,
         do_constant_folding=True,
-        verbose=True,
     )
 
     # Verify the model
