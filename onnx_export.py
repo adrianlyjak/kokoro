@@ -50,12 +50,12 @@ print(f"ref_s shape: {ref_s.shape}")
 output = model(phonemes=input_ids, ref_s=ref_s)
 print(f"time for dummy inputs: {time.time() - start_time}")
 
-# Define dynamic dimensions
-batch = Dim("batch", min=1, max=32)
-seq = Dim("sequence", min=1, max=context_length)
-
-# Define dynamic shapes for inputs only
-dynamic_shapes = {"phonemes": {0: batch, 1: seq}, "ref_s": {0: batch}}
+# Define dynamic axes
+dynamic_axes = {
+    "phonemes": {0: "batch", 1: "sequence"},
+    "ref_s": {0: "batch"},
+    "output": {0: "batch"},
+}
 
 print("Starting ONNX export...")
 try:
@@ -65,10 +65,8 @@ try:
         "kokoro.onnx",
         input_names=["phonemes", "ref_s"],
         output_names=["output"],
-        dynamic_shapes=dynamic_shapes,
+        dynamic_axes=dynamic_axes,
         opset_version=20,
-        dynamo=True,
-        report=True,
         export_params=True,
         do_constant_folding=True,
         verbose=True,
