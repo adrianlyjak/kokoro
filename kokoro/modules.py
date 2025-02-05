@@ -136,9 +136,8 @@ class ProsodyPredictor(nn.Module):
 
     def forward(self, texts, style, text_lengths, alignment, m):
         d = self.text_encoder(texts, style, text_lengths, m)
-        input_lengths = text_lengths.cpu().numpy()
         x = nn.utils.rnn.pack_padded_sequence(
-            d, input_lengths, batch_first=True, enforce_sorted=False
+            d, text_lengths, batch_first=True, enforce_sorted=False
         )
         m = m.to(text_lengths.device).unsqueeze(1)
         self.lstm.flatten_parameters()
