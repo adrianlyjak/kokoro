@@ -137,6 +137,7 @@ class KPipeline:
                 p = LANG_CODES.get(self.lang_code, self.lang_code)
                 logger.warning(f'Language mismatch, loading {v} voice into {p} pipeline.')
         pack = torch.load(f, weights_only=True)
+        print("pack", pack.shape)
         self.voices[voice] = pack
         return pack
 

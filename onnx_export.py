@@ -16,10 +16,14 @@ import time
 import torch
 from kokoro.model import KModelInner
 import onnx
+from loguru import logger
+import onnxruntime as ort
+import numpy as np
 
 model = KModelInner().eval()
 
-print(model)
+logger.info("Model architecture:")
+logger.info(model)
 
 # Constants from the model
 batch_size = 1
@@ -39,13 +43,13 @@ ref_s = torch.randn(batch_size, style_dim)
 
 # Test the inputs
 start_time = time.time()
-print("Trying dummy inputs")
-print(f"input_ids shape: {input_ids.shape}")
-print(f"input_lengths shape: {input_lengths.shape}")
-print(f"ref_s shape: {ref_s.shape}")
+logger.info("Trying dummy inputs")
+logger.info(f"input_ids shape: {input_ids.shape}")
+logger.info(f"input_lengths shape: {input_lengths.shape}")
+logger.info(f"ref_s shape: {ref_s.shape}")
 
 output = model(input_ids=input_ids, input_lengths=input_lengths, ref_s=ref_s, speed=1.0)
-print(f"Time for dummy inputs: {time.time() - start_time}")
+logger.info(f"Time for dummy inputs: {time.time() - start_time}")
 
 # Define dynamic axes
 dynamic_axes = {
@@ -56,7 +60,7 @@ dynamic_axes = {
     "pred_dur": {0: "batch", 1: "sequence"},
 }
 
-print("Starting ONNX export...")
+logger.info("Starting ONNX export...")
 try:
     torch.onnx.export(
         model,
@@ -73,8 +77,19 @@ try:
     # Verify the model
     onnx_model = onnx.load("kokoro.onnx")
     onnx.checker.check_model(onnx_model)
-    print("Model was successfully exported to ONNX")
+    logger.info("Model was successfully exported to ONNX")
+
+    # Additional check: Run a simple inference to validate the exported model
+    ort_session = ort.InferenceSession("kokoro.onnx")
+    ort_inputs = {
+        "input_ids": input_ids.numpy(),
+        "input_lengths": input_lengths.numpy(),
+        "ref_s": ref_s.numpy(),
+        "speed": np.array([1.0], dtype=np.float64)
+    }
+    ort_outputs = ort_session.run(None, ort_inputs)
+    logger.info("Inference with exported model successful")
 
 except Exception as e:
-    print(f"Export failed: {str(e)}")
+    logger.error(f"Export failed: {str(e)}")
     raise

@@ -81,12 +81,13 @@ class TextEncoder(nn.Module):
         c0 = torch.zeros(2, batch_size, self.hidden_size, device=x.device)
 
         # Run LSTM with mask
-        x, _ = self.lstm(x * seq_mask.unsqueeze(-1), (h0, c0))
-        x = x * seq_mask.unsqueeze(-1)  # Apply mask to output
+        x, _ = self.lstm(x * seq_mask.unsqueeze(2), (h0, c0))
+        x = x * seq_mask.unsqueeze(2)
 
-        x = x.transpose(-1, -2)
-        x_pad = torch.zeros([x.shape[0], x.shape[1], m.shape[-1]], device=x.device)
-        x_pad[:, :, : x.shape[-1]] = x
+        # Replace negative indices with positive ones
+        x = x.transpose(2, 1)  # [B, chn, T]
+        x_pad = torch.zeros([x.shape[0], x.shape[1], m.shape[1]], device=x.device)
+        x_pad[:, :, : x.shape[2]] = x
         x = x_pad
         x.masked_fill_(m.unsqueeze(1), 0.0)
         return x
@@ -210,45 +211,45 @@ class DurationEncoder(nn.Module):
 
     def forward(self, x, style, text_lengths, m):
         masks = m
-        x = x.permute(2, 0, 1)
+        x = x.permute(2, 0, 1)  # [T, B, chn]
         s = style.expand(x.shape[0], x.shape[1], -1)
         x = torch.cat([x, s], axis=-1)
-        x.masked_fill_(masks.unsqueeze(-1).transpose(0, 1), 0.0)
-        x = x.transpose(0, 1)
-        x = x.transpose(-1, -2)
+        x.masked_fill_(masks.unsqueeze(2).transpose(0, 1), 0.0)
+        x = x.transpose(0, 1)  # [B, T, chn]
+        x = x.transpose(2, 1)  # [B, chn, T]
 
         # Create sequence mask once
         batch_size = text_lengths.size(0)
-        max_length = x.size(-1)
+        max_length = x.size(2)
         seq_mask = (
             torch.arange(max_length, device=x.device)[None, :] < text_lengths[:, None]
         )
 
         for block in self.lstms:
             if isinstance(block, AdaLayerNorm):
-                x = block(x.transpose(-1, -2), style).transpose(-1, -2)
-                x = torch.cat([x, s.permute(1, -1, 0)], axis=1)
-                x.masked_fill_(masks.unsqueeze(-1).transpose(-1, -2), 0.0)
+                x = block(x.transpose(2, 1), style).transpose(2, 1)
+                x = torch.cat([x, s.permute(1, 2, 0)], axis=1)
+                x.masked_fill_(masks.unsqueeze(2).transpose(1, 2), 0.0)
             else:
-                x = x.transpose(-1, -2)
+                x = x.transpose(2, 1)
 
                 # Initialize LSTM states
                 h0 = torch.zeros(2, batch_size, self.hidden_size, device=x.device)
                 c0 = torch.zeros(2, batch_size, self.hidden_size, device=x.device)
 
                 # Run LSTM with mask
-                x, _ = block(x * seq_mask.unsqueeze(-1), (h0, c0))
-                x = x * seq_mask.unsqueeze(-1)
+                x, _ = block(x * seq_mask.unsqueeze(2), (h0, c0))
+                x = x * seq_mask.unsqueeze(2)
 
                 x = F.dropout(x, p=self.dropout, training=False)
-                x = x.transpose(-1, -2)
+                x = x.transpose(2, 1)
                 x_pad = torch.zeros(
-                    [x.shape[0], x.shape[1], m.shape[-1]], device=x.device
+                    [x.shape[0], x.shape[1], m.shape[1]], device=x.device
                 )
-                x_pad[:, :, : x.shape[-1]] = x
+                x_pad[:, :, : x.shape[2]] = x
                 x = x_pad
 
-        return x.transpose(-1, -2)
+        return x.transpose(2, 1)
 
 
 # https://github.com/yl4579/StyleTTS2/blob/main/Utils/PLBERT/util.py
