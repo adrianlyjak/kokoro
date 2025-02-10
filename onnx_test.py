@@ -19,7 +19,7 @@ import time
 import onnxruntime as ort
 import numpy as np
 import torch
-from kokoro.model import KModel
+from kokoro.model import KModel, KModelForONNX
 from kokoro.pipeline import KPipeline
 from loguru import logger
 import soundfile as sf
@@ -43,7 +43,7 @@ with open(config_path, "r", encoding="utf-8") as f:
 vocab = config["vocab"]
 
 # Initialize the KModel
-torch_model = KModel().eval()
+torch_model = KModelForONNX(KModel()).eval()
 
 # Example text and voice
 text = "Hello! This is a test of the Kokoro text-to-speech system."
@@ -64,7 +64,7 @@ for graphemes, phonemes, token_list in pipeline.en_tokenize(tokens):
         ref_s = ref_s[input_ids.shape[1] - 1]  # Select the appropriate style vector
 
         # Run the PyTorch model
-        torch_output, torch_pred_dur = torch_model.model(
+        torch_output, torch_pred_dur = torch_model(
             input_ids=input_ids, input_lengths=input_lengths, ref_s=ref_s, speed=1.0
         )
 
@@ -85,8 +85,9 @@ for graphemes, phonemes, token_list in pipeline.en_tokenize(tokens):
         audio_mse = mse_loss(torch.tensor(torch_audio).flatten(), torch.tensor(onnx_audio).flatten())
         logger.info(f"MSE for audio output: {audio_mse.item():.5f}")
 
-        sf.write('torch_output.wav', torch_audio, 24000)  # Assuming a sample rate of 24000 Hz
-        sf.write('onnx_output.wav', onnx_audio, 24000)
+        print(torch_audio.shape, onnx_audio.shape)
+        sf.write('torch_output.wav', torch_audio[0], 24000)  # Assuming a sample rate of 24000 Hz
+        sf.write('onnx_output.wav', onnx_audio[0], 24000)
 
         logger.info("Audio comparison complete. Files written: 'torch_output.wav', 'onnx_output.wav'.")
 

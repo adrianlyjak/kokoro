@@ -14,13 +14,13 @@
 # ///
 import time
 import torch
-from kokoro.model import KModelInner
+from kokoro.model import KModelForONNX, KModel
 import onnx
 from loguru import logger
 import onnxruntime as ort
 import numpy as np
 
-model = KModelInner().eval()
+model = KModelForONNX(KModel()).eval()
 
 # Constants from the model
 batch_size = 1
