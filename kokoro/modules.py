@@ -46,7 +46,6 @@ class TextEncoder(nn.Module):
                 nn.Dropout(0.2),
             ))
         self.lstm = nn.LSTM(channels, channels//2, 1, batch_first=True, bidirectional=True)
-        self.hidden_size = channels // 2
 
     def forward(self, x, input_lengths, m):
         x = self.embedding(x)  # [B, T, emb]
@@ -57,25 +56,13 @@ class TextEncoder(nn.Module):
             x = c(x)
             x.masked_fill_(m, 0.0)
         x = x.transpose(1, 2)  # [B, T, chn]
-        # Create sequence mask for LSTM
-        batch_size = x.size(0)
-        max_length = x.size(1)
-        seq_mask = (
-            torch.arange(max_length, device=x.device)[None, :] < input_lengths[:, None]
-        )
-
-        # Initialize LSTM states
-        h0 = torch.zeros(2, batch_size, self.hidden_size, device=x.device)
-        c0 = torch.zeros(2, batch_size, self.hidden_size, device=x.device)
-
-        # Run LSTM with mask
-        x, _ = self.lstm(x * seq_mask.unsqueeze(2), (h0, c0))
-        x = x * seq_mask.unsqueeze(2)
-
-        # Replace negative indices with positive ones
-        x = x.transpose(2, 1)  # [B, chn, T]
-        x_pad = torch.zeros([x.shape[0], x.shape[1], m.shape[2]], device=x.device)
-        x_pad[:, :, : x.shape[2]] = x
+        x = nn.utils.rnn.pack_padded_sequence(x, input_lengths, batch_first=True, enforce_sorted=False)
+        self.lstm.flatten_parameters()
+        x, _ = self.lstm(x)
+        x, _ = nn.utils.rnn.pad_packed_sequence(x, batch_first=True)
+        x = x.transpose(-1, -2)
+        x_pad = torch.zeros([x.shape[0], x.shape[1], m.shape[-1]])
+        x_pad[:, :, :x.shape[-1]] = x
         x = x_pad
         x.masked_fill_(m, 0.0)
         return x
@@ -117,30 +104,17 @@ class ProsodyPredictor(nn.Module):
         self.N.append(AdainResBlk1d(d_hid // 2, d_hid // 2, style_dim, dropout_p=dropout))
         self.F0_proj = nn.Conv1d(d_hid // 2, 1, 1, 1, 0)
         self.N_proj = nn.Conv1d(d_hid // 2, 1, 1, 1, 0)
-        self.hidden_size = d_hid // 2
 
     def forward(self, texts, style, text_lengths, alignment, m):
         d = self.text_encoder(texts, style, text_lengths, m)
-
-        # Create sequence mask
-        batch_size = d.size(0)
-        max_length = d.size(1)
-        seq_mask = (
-            torch.arange(max_length, device=d.device)[None, :] < text_lengths[:, None]
-        )
-
-        # Initialize LSTM states
-        h0 = torch.zeros(2, batch_size, self.hidden_size, device=d.device)
-        c0 = torch.zeros(2, batch_size, self.hidden_size, device=d.device)
-
-        # Run LSTM with mask
-        x, _ = self.lstm(d * seq_mask.unsqueeze(-1), (h0, c0))
-        x = x * seq_mask.unsqueeze(-1)
-
+        m = m.unsqueeze(1)
+        x = nn.utils.rnn.pack_padded_sequence(d, text_lengths, batch_first=True, enforce_sorted=False)
+        self.lstm.flatten_parameters()
+        x, _ = self.lstm(x)
+        x, _ = nn.utils.rnn.pad_packed_sequence(x, batch_first=True)
         x_pad = torch.zeros([x.shape[0], m.shape[-1], x.shape[-1]], device=x.device)
-        x_pad[:, : x.shape[1], :] = x
+        x_pad[:, :x.shape[1], :] = x
         x = x_pad
-
         duration = self.duration_proj(nn.functional.dropout(x, 0.5, training=False))
         en = (d.transpose(-1, -2) @ alignment)
         return duration.squeeze(-1), en
@@ -162,7 +136,6 @@ class DurationEncoder(nn.Module):
     def __init__(self, sty_dim, d_model, nlayers, dropout=0.1):
         super().__init__()
         self.lstms = nn.ModuleList()
-        self.hidden_size = d_model // 2
         for _ in range(nlayers):
             self.lstms.append(nn.LSTM(d_model + sty_dim, d_model // 2, num_layers=1, batch_first=True, bidirectional=True, dropout=dropout))
             self.lstms.append(AdaLayerNorm(sty_dim, d_model))
@@ -175,42 +148,29 @@ class DurationEncoder(nn.Module):
         x = x.permute(2, 0, 1)
         s = style.expand(x.shape[0], x.shape[1], -1)
         x = torch.cat([x, s], axis=-1)
-        x.masked_fill_(masks.unsqueeze(2).transpose(0, 1), 0.0)
-        x = x.transpose(0, 1)  # [B, T, chn]
-        x = x.transpose(2, 1)  # [B, chn, T]
-
-        # Create sequence mask once
-        batch_size = text_lengths.size(0)
-        max_length = x.size(2)
-        seq_mask = (
-            torch.arange(max_length, device=x.device)[None, :] < text_lengths[:, None]
-        )
-
+        x.masked_fill_(masks.unsqueeze(-1).transpose(0, 1), 0.0)
+        x = x.transpose(0, 1)
+        x = x.transpose(-1, -2)
         for block in self.lstms:
             if isinstance(block, AdaLayerNorm):
-                x = block(x.transpose(2, 1), style).transpose(2, 1)
+                x = block(x.transpose(-1, -2), style).transpose(-1, -2)
                 x = torch.cat([x, s.permute(1, 2, 0)], axis=1)
-                x.masked_fill_(masks.unsqueeze(2).transpose(1, 2), 0.0)
+                x.masked_fill_(masks.unsqueeze(-1).transpose(-1, -2), 0.0)
             else:
-                x = x.transpose(2, 1)
-
-                # Initialize LSTM states
-                h0 = torch.zeros(2, batch_size, self.hidden_size, device=x.device)
-                c0 = torch.zeros(2, batch_size, self.hidden_size, device=x.device)
-
-                # Run LSTM with mask
-                x, _ = block(x * seq_mask.unsqueeze(2), (h0, c0))
-                x = x * seq_mask.unsqueeze(2)
-
+                x = x.transpose(-1, -2)
+                x = nn.utils.rnn.pack_padded_sequence(
+                    x, text_lengths, batch_first=True, enforce_sorted=False)
+                block.flatten_parameters()
+                x, _ = block(x)
+                x, _ = nn.utils.rnn.pad_packed_sequence(
+                    x, batch_first=True)
                 x = F.dropout(x, p=self.dropout, training=False)
-                x = x.transpose(2, 1)
-                x_pad = torch.zeros(
-                    [x.shape[0], x.shape[1], m.shape[1]], device=x.device
-                )
-                x_pad[:, :, : x.shape[2]] = x
+                x = x.transpose(-1, -2)
+                x_pad = torch.zeros([x.shape[0], x.shape[1], m.shape[-1]], device=x.device)
+                x_pad[:, :, : x.shape[-1]] = x
                 x = x_pad
 
-        return x.transpose(2, 1)
+        return x.transpose(-1, -2)
 
 
 # https://github.com/yl4579/StyleTTS2/blob/main/Utils/PLBERT/util.py
