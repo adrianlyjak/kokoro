@@ -134,6 +134,7 @@ class CustomSTFT(nn.Module):
         magnitude = torch.sqrt(real_out**2 + imag_out**2 + 1e-14)
         phase = torch.atan2(imag_out, real_out)
         # Handle the case where imag_out is 0 and real_out is negative to correct ONNX atan2 to match PyTorch
+        # In this case, PyTorch returns pi, ONNX returns -pi
         correction_mask = (imag_out == 0) & (real_out < 0)
         phase[correction_mask] = torch.pi
         return magnitude, phase
