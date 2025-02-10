@@ -26,20 +26,15 @@ class AdaIN1d(nn.Module):
         self.fc = nn.Linear(style_dim, num_features * 2)
 
     def forward(self, x, s):
-        # x: (B, C, T)
-        # s: (B, style_dim)
-        # 1) Produce gamma, beta from style
-        h = self.fc(s)  # (B, 2 * C)
-        h = h.view(h.size(0), h.size(1), 1)  # -> (B, 2C, 1)
-        gamma, beta = torch.chunk(h, chunks=2, dim=1)  # each (B, C, 1)
+        h = self.fc(s)
+        h = h.view(h.size(0), h.size(1), 1)
+        gamma, beta = torch.chunk(h, chunks=2, dim=1)
 
         # Note: This could/should use normal nn.InstanceNorm1d, however
         # input transposes from LSTM outputs throw onnx export through a loop, and it loses track of dimensionality, so this reshapes the input and runs the instance norm manually
         mean = x.mean(dim=2, keepdim=True)
         var = ((x - mean)**2).mean(dim=2, keepdim=True)
         x_norm = (x - mean) / torch.sqrt(var + self.eps)
-
-        # 3) Apply AdaIN transform
         return (1.0 + gamma) * x_norm + beta
 
 class AdaINResBlock1(nn.Module):

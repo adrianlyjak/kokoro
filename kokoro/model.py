@@ -72,6 +72,7 @@ class KModel(torch.nn.Module):
         audio: torch.FloatTensor
         pred_dur: Optional[torch.LongTensor] = None
 
+    @torch.no_grad()
     def forward_with_tokens(
         self,
         input_ids: torch.LongTensor,
@@ -100,7 +101,6 @@ class KModel(torch.nn.Module):
         audio = self.decoder(asr, F0_pred, N_pred, ref_s[:, :128])
         return audio, pred_dur
 
-    @torch.no_grad()
     def forward(
         self,
         phonemes: str,
