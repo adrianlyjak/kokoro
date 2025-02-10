@@ -57,12 +57,7 @@ for graphemes, phonemes, token_list in pipeline.en_tokenize(tokens):
     with torch.no_grad():
         # Convert phonemes to input_ids
         input_ids = torch.LongTensor([[0, *map(lambda p: vocab.get(p), phonemes), 0]])
-        print("graphemes", graphemes)
-        print("phonemes", phonemes)
-        print("token_list", token_list)
-        print("input_ids", input_ids)
         input_lengths = torch.LongTensor([input_ids.shape[-1]])
-        print("input_lengths", input_lengths)
         
         # Load and process the style vector
         ref_s = pipeline.load_voice(voice)

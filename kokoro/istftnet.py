@@ -33,8 +33,8 @@ class AdaIN1d(nn.Module):
         h = h.view(h.size(0), h.size(1), 1)  # -> (B, 2C, 1)
         gamma, beta = torch.chunk(h, chunks=2, dim=1)  # each (B, C, 1)
 
-        # 2) Manual instance norm across T dimension
-        #    mean/variance per (B, C)
+        # Note: This could/should use normal nn.InstanceNorm1d, however
+        # input transposes from LSTM outputs throw onnx export through a loop, and it loses track of dimensionality, so this reshapes the input and runs the instance norm manually
         mean = x.mean(dim=2, keepdim=True)
         var = ((x - mean)**2).mean(dim=2, keepdim=True)
         x_norm = (x - mean) / torch.sqrt(var + self.eps)
@@ -260,7 +260,7 @@ class SourceModuleHnNSF(nn.Module):
             sine_wavs, uv, _ = self.l_sin_gen(x)
         sine_merge = self.l_tanh(self.l_linear(sine_wavs))
         # source for noise branch, in the same shape as uv
-        noise = torch.randn_like(uv) * self.sine_amp / 3 
+        noise = torch.randn_like(uv) * self.sine_amp / 3
         return sine_merge, noise, uv
 
 
@@ -423,5 +423,4 @@ class Decoder(nn.Module):
             if block.upsample_type != "none":
                 res = False
         x = self.generator(x, s, F0_curve)
-        
         return x

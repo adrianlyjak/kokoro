@@ -29,9 +29,6 @@ def test_stft_reconstruction(sample_audio):
     # Compare outputs
     assert torch.allclose(custom_output, torch_output, rtol=1e-3, atol=1e-3)
 
-    print("\nDebug comparison:")
-    debug_stft_details(sample_audio, 800, 200, 800)
-
 
 def test_magnitude_phase_consistency(sample_audio):
     custom_stft = CustomSTFT(filter_length=800, hop_length=200, win_length=800)
@@ -82,24 +79,3 @@ def test_different_window_sizes():
 
         # Check that output length is reasonable
         assert output.shape[-1] >= signal.shape[-1]
-
-
-def debug_stft_details(signal, filter_length, hop_length, win_length):
-    window = torch.hann_window(win_length)
-    stft = torch.stft(
-        signal,
-        n_fft=filter_length,
-        hop_length=hop_length,
-        win_length=win_length,
-        window=window,
-        center=True,
-        return_complex=True,
-        normalized=False,
-        onesided=True,
-    )
-    print("\nTorch STFT details:")
-    print(f"Input shape: {signal.shape}")
-    print(f"STFT output shape: {stft.shape}")
-    print(f"Window sum: {window.sum()}")
-    print(f"First few frequency bins: {stft[0, :5, 0]}")
-    return stft
