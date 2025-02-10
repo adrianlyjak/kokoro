@@ -121,8 +121,7 @@ class KModelInner(nn.Module):
         input_lengths: torch.LongTensor,  # [B]
         ref_s: torch.FloatTensor,  # [B, style_dim]
         speed: Number = 1,
-    ) -> tuple[torch.FloatTensor, torch.LongTensor, Dict[str, torch.Tensor]]:  # audio, pred_dur, intermediates
-        # Create attention mask without device movement
+    ) -> tuple[torch.FloatTensor, torch.LongTensor]:  # audio, pred_dur
         text_mask = (
             torch.arange(input_lengths.max(), device=input_ids.device)
             .unsqueeze(0)
@@ -161,42 +160,11 @@ class KModelInner(nn.Module):
         F0_pred, N_pred = self.predictor.F0Ntrain(en, s)
         t_en = self.text_encoder(input_ids, input_lengths, text_mask)
         asr = t_en @ pred_aln_trg
-        audio, F0, N, asr_res, har_source, har_spec, har_phase, noi_source, uv, gen_spec, gen_phase, gen_x_0, gen_x_1, gen_x_0_relu, gen_x_0_source_convs, gen_x_0_source_res, gen_x_0_ups = self.decoder(asr, F0_pred, N_pred, ref_s[:, :128])
+        audio = self.decoder(asr, F0_pred, N_pred, ref_s[:, :128])
         audio = audio.squeeze()
 
-        # Collect intermediate values
-        intermediates = {
-            "bert_dur": bert_dur,
-            "d_en": d_en,
-            "s": s,
-            "d": d,
-            "x": x,
-            "duration": duration,
-            "pred_aln_trg": pred_aln_trg,
-            "en": en,
-            "F0_pred": F0_pred,
-            "N_pred": N_pred,
-            "t_en": t_en,
-            "asr": asr,
-            "F0": F0,
-            "N": N,
-            "asr_res": asr_res,
-            "har_source": har_source,
-            "har_spec": har_spec,
-            "har_phase": har_phase,
-            "noi_source": noi_source,
-            "uv": uv,
-            "gen_spec": gen_spec,
-            "gen_phase": gen_phase,
-            "gen_x_0": gen_x_0,
-            "gen_x_1": gen_x_1,
-            "gen_x_0_relu": gen_x_0_relu,
-            "gen_x_0_source_convs": gen_x_0_source_convs,
-            "gen_x_0_source_res": gen_x_0_source_res,
-            "gen_x_0_ups": gen_x_0_ups,
-        }
 
-        return audio, pred_dur, intermediates
+        return audio, pred_dur
 
 
 class KModel(nn.Module):
@@ -254,7 +222,7 @@ class KModel(nn.Module):
         ref_s = ref_s.to(self.device)
 
         # Forward through inner model
-        audio, pred_dur, intermediates = self.model(input_ids, input_lengths, ref_s, speed)
+        audio, pred_dur = self.model(input_ids, input_lengths, ref_s, speed)
 
         audio = audio.cpu()
         pred_dur = pred_dur.cpu() if pred_dur is not None else None

@@ -69,7 +69,7 @@ for graphemes, phonemes, token_list in pipeline.en_tokenize(tokens):
         ref_s = ref_s[input_ids.shape[1] - 1]  # Select the appropriate style vector
 
         # Run the PyTorch model
-        torch_output, torch_pred_dur, torch_intermediates = torch_model.model(
+        torch_output, torch_pred_dur = torch_model.model(
             input_ids=input_ids, input_lengths=input_lengths, ref_s=ref_s, speed=1.0
         )
 
@@ -81,15 +81,6 @@ for graphemes, phonemes, token_list in pipeline.en_tokenize(tokens):
             "speed": np.array([1.0], dtype=np.float64)
         }
         ort_outputs = session.run(None, ort_inputs)
-
-        # Compare outputs using MSE
-        for name, torch_intermediate in torch_intermediates.items():
-            onnx_output = ort_outputs[list(torch_intermediates.keys()).index(name) + 2]  # +2 to skip audio and pred_dur
-            onnx_output_tensor = torch.tensor(onnx_output)
-
-            # Calculate MSE
-            mse = mse_loss(torch_intermediate.flatten(), onnx_output_tensor.flatten())
-            logger.info(f"MSE for {name}: {mse.item():.5f}")
 
         # Write audio to file
         torch_audio = torch_output.cpu().numpy()
