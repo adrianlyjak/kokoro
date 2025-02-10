@@ -8,7 +8,6 @@ from transformers import AlbertConfig
 from typing import Dict, Optional, Union
 import json
 import torch
-import torch.nn as nn
 
 class KModel(torch.nn.Module):
     '''
@@ -27,7 +26,7 @@ class KModel(torch.nn.Module):
 
     REPO_ID = 'hexgrad/Kokoro-82M'
 
-    def __init__(self, config: Union[Dict, str, None] = None, model: Optional[str] = None):
+    def __init__(self, config: Union[Dict, str, None] = None, model: Optional[str] = None, disable_complex: bool = False):
         super().__init__()
         if not isinstance(config, dict):
             if not config:
@@ -50,7 +49,7 @@ class KModel(torch.nn.Module):
         )
         self.decoder = Decoder(
             dim_in=config['hidden_dim'], style_dim=config['style_dim'],
-            dim_out=config['n_mels'], **config['istftnet']
+            dim_out=config['n_mels'], disable_complex=disable_complex, **config['istftnet']
         )
         if not model:
             model = hf_hub_download(repo_id=KModel.REPO_ID, filename='kokoro-v1_0.pth')
@@ -98,7 +97,7 @@ class KModel(torch.nn.Module):
         F0_pred, N_pred = self.predictor.F0Ntrain(en, s)
         t_en = self.text_encoder(input_ids, input_lengths, text_mask)
         asr = t_en @ pred_aln_trg
-        audio = self.decoder(asr, F0_pred, N_pred, ref_s[:, :128])
+        audio = self.decoder(asr, F0_pred, N_pred, ref_s[:, :128]).squeeze()
         return audio, pred_dur
 
     def forward(
@@ -120,7 +119,7 @@ class KModel(torch.nn.Module):
         logger.debug(f"pred_dur: {pred_dur}")
         return self.Output(audio=audio, pred_dur=pred_dur) if return_output else audio
 
-class KModelForONNX(nn.Module):
+class KModelForONNX(torch.nn.Module):
     def __init__(self, kmodel: KModel):
         super().__init__()
         self.kmodel = kmodel

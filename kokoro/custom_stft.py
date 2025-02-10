@@ -187,7 +187,7 @@ class CustomSTFT(nn.Module):
             waveform = waveform[..., :length]
 
         # shape => (B, T)
-        return waveform.squeeze(1)
+        return waveform
 
     def forward(self, x: torch.Tensor):
         """

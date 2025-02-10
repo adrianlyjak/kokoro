@@ -20,7 +20,7 @@ from loguru import logger
 import onnxruntime as ort
 import numpy as np
 
-model = KModelForONNX(KModel()).eval()
+model = KModelForONNX(KModel(disable_complex=True)).eval()
 
 # Constants from the model
 batch_size = 1

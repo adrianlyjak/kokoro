@@ -84,10 +84,8 @@ for graphemes, phonemes, token_list in pipeline.en_tokenize(tokens):
         # Calculate MSE for audio outputs
         audio_mse = mse_loss(torch.tensor(torch_audio).flatten(), torch.tensor(onnx_audio).flatten())
         logger.info(f"MSE for audio output: {audio_mse.item():.5f}")
-
-
-        sf.write('torch_output.wav', torch_audio[0], 24000)  # Assuming a sample rate of 24000 Hz
-        sf.write('onnx_output.wav', onnx_audio[0], 24000)
+        sf.write('torch_output.wav', torch_audio, 24000)  # Assuming a sample rate of 24000 Hz
+        sf.write('onnx_output.wav', onnx_audio, 24000)
 
         logger.info("Audio comparison complete. Files written: 'torch_output.wav', 'onnx_output.wav'.")
 
