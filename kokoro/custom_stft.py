@@ -1,3 +1,4 @@
+from attr import attr
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -97,6 +98,8 @@ class CustomSTFT(nn.Module):
         self.register_buffer(
             "weight_backward_imag", torch.from_numpy(backward_imag).float().unsqueeze(1)
         )
+        
+
 
     def transform(self, waveform: torch.Tensor):
         """
@@ -130,7 +133,11 @@ class CustomSTFT(nn.Module):
         # magnitude, phase
         magnitude = torch.sqrt(real_out**2 + imag_out**2 + 1e-14)
         phase = torch.atan2(imag_out, real_out)
+        # Handle the case where imag_out is 0 and real_out is negative to correct ONNX atan2 to match PyTorch
+        correction_mask = (imag_out == 0) & (real_out < 0)
+        phase[correction_mask] = torch.pi
         return magnitude, phase
+
 
     def inverse(self, magnitude: torch.Tensor, phase: torch.Tensor, length=None):
         """
@@ -172,16 +179,11 @@ class CustomSTFT(nn.Module):
             pad_len = self.n_fft // 2
             # Because of transposed convolution, total length might have extra samples
             # We remove `pad_len` from start & end if possible
-            if waveform.shape[-1] > 2 * pad_len:
-                waveform = waveform[..., pad_len:-pad_len]
+            waveform = waveform[..., pad_len:-pad_len]
 
         # If a specific length is desired, clamp
         if length is not None:
-            if waveform.shape[-1] > length:
-                waveform = waveform[..., :length]
-            elif waveform.shape[-1] < length:
-                pad_amount = length - waveform.shape[-1]
-                waveform = F.pad(waveform, (0, pad_amount))
+            waveform = waveform[..., :length]
 
         # shape => (B, T)
         return waveform.squeeze(1)

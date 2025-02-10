@@ -36,7 +36,7 @@ class AdaIN1d(nn.Module):
         # 2) Manual instance norm across T dimension
         #    mean/variance per (B, C)
         mean = x.mean(dim=2, keepdim=True)
-        var = x.var(dim=2, keepdim=True, unbiased=False)
+        var = ((x - mean)**2).mean(dim=2, keepdim=True)
         x_norm = (x - mean) / torch.sqrt(var + self.eps)
 
         # 3) Apply AdaIN transform
@@ -215,7 +215,7 @@ class SineGen(nn.Module):
         noise = noise_amp * torch.randn_like(sine_waves)
         # first: set the unvoiced part to 0 by uv
         # then: additive noise
-        sine_waves = sine_waves * uv + noise
+        sine_waves = sine_waves * uv # + noise
         return sine_waves, uv, noise
 
 
@@ -260,7 +260,7 @@ class SourceModuleHnNSF(nn.Module):
             sine_wavs, uv, _ = self.l_sin_gen(x)
         sine_merge = self.l_tanh(self.l_linear(sine_wavs))
         # source for noise branch, in the same shape as uv
-        noise = torch.randn_like(uv) * self.sine_amp / 3
+        noise = uv * self.sine_amp / 3
         return sine_merge, noise, uv
 
 
@@ -272,7 +272,7 @@ class Generator(nn.Module):
         self.m_source = SourceModuleHnNSF(
                     sampling_rate=24000,
                     upsample_scale=np.prod(upsample_rates) * gen_istft_hop_size,
-                    harmonic_num=8, voiced_threshod=10)
+                    harmonic_num=8, voiced_threshod=10, add_noise_std=0.0)
         self.f0_upsamp = nn.Upsample(scale_factor=np.prod(upsample_rates) * gen_istft_hop_size)
         self.noise_convs = nn.ModuleList()
         self.noise_res = nn.ModuleList()
@@ -309,11 +309,25 @@ class Generator(nn.Module):
             har_source = har_source.transpose(1, 2).squeeze(1)
             har_spec, har_phase = self.stft.transform(har_source)
             har = torch.cat([har_spec, har_phase], dim=1)
+        x_0 = x
+        x_0_relu = None
+        x_0_source_convs = None
+        x_0_source_res = None
+        x_0_ups = None
+        x_1 = x
         for i in range(self.num_upsamples):
             x = F.leaky_relu(x, negative_slope=0.1) 
+            if x_0_relu is None:
+                x_0_relu = x
             x_source = self.noise_convs[i](har)
+            if x_0_source_convs is None:
+                x_0_source_convs = x_source
             x_source = self.noise_res[i](x_source, s)
+            if x_0_source_res is None:
+                x_0_source_res = x_source
             x = self.ups[i](x)
+            if x_0_ups is None:
+                x_0_ups = x
             if i == self.num_upsamples - 1:
                 x = self.reflection_pad(x)
             x = x + x_source
@@ -324,11 +338,18 @@ class Generator(nn.Module):
                 else:
                     xs += self.resblocks[i*self.num_kernels+j](x, s)
             x = xs / self.num_kernels
+            if i == 0:
+                x_0 = x
+            if i == 1:
+                x_1 = x
         x = F.leaky_relu(x)
         x = self.conv_post(x)
         spec = torch.exp(x[:,:self.post_n_fft // 2 + 1, :])
         phase = torch.sin(x[:, self.post_n_fft // 2 + 1:, :])
-        return self.stft.inverse(spec, phase)
+        audio = self.stft.inverse(spec, phase)
+        
+        # Return audio and intermediate values
+        return audio, har_source, har_spec, har_phase, noi_source, uv, spec, phase, x_0, x_1, x_0_relu, x_0_source_convs, x_0_source_res, x_0_ups
 
 
 class UpSample1d(nn.Module):
@@ -422,5 +443,7 @@ class Decoder(nn.Module):
             x = block(x, s)
             if block.upsample_type != "none":
                 res = False
-        x = self.generator(x, s, F0_curve)
-        return x
+        audio, har_source, har_spec, har_phase, noi_source, uv, gen_spec, gen_phase, gen_x_0, gen_x_1, gen_x_0_relu, gen_x_0_source_convs, gen_x_0_source_res, gen_x_0_ups = self.generator(x, s, F0_curve)
+        
+        # Return audio and intermediate values
+        return audio, F0, N, asr_res, har_source, har_spec, har_phase, noi_source, uv, gen_spec, gen_phase, gen_x_0, gen_x_1, gen_x_0_relu, gen_x_0_source_convs, gen_x_0_source_res, gen_x_0_ups

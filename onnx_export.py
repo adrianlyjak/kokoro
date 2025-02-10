@@ -19,6 +19,7 @@ import onnx
 from loguru import logger
 import onnxruntime as ort
 import numpy as np
+from torch.nn.functional import cosine_similarity
 
 model = KModelInner().eval()
 
@@ -48,7 +49,7 @@ logger.info(f"input_ids shape: {input_ids.shape}")
 logger.info(f"input_lengths shape: {input_lengths.shape}")
 logger.info(f"ref_s shape: {ref_s.shape}")
 
-output = model(input_ids=input_ids, input_lengths=input_lengths, ref_s=ref_s, speed=1.0)
+output, pred_dur, intermediates = model(input_ids=input_ids, input_lengths=input_lengths, ref_s=ref_s, speed=1.0)
 logger.info(f"Time for dummy inputs: {time.time() - start_time}")
 
 # Define dynamic axes
@@ -58,6 +59,29 @@ dynamic_axes = {
     "ref_s": {0: "batch"},
     "audio": {0: "batch", 1: "sequence"},
     "pred_dur": {0: "batch", 1: "sequence"},
+    # Add dynamic axes for intermediate outputs
+    "bert_dur": {0: "batch", 1: "sequence"},
+    "d_en": {0: "batch", 1: "sequence"},
+    "s": {0: "batch"},
+    "d": {0: "batch", 1: "lstm1"},
+    "x": {0: "batch", 1: "lstm2"},
+    "duration": {0: "batch"},
+    "pred_aln_trg": {0: "sequence", 1: "sequence"},
+    "en": {0: "batch", 1: "sequence"},
+    "F0_pred": {0: "batch", 1: "sequence"},
+    "N_pred": {0: "batch", 1: "sequence"},
+    "t_en": {0: "batch", 1: "sequence"},
+    "asr": {0: "batch", 1: "sequence"},
+    "F0": {0: "batch", 1: "sequence"},
+    "N": {0: "batch", 1: "sequence"},
+    "asr_res": {0: "batch", 1: "sequence"},
+    "har_source": {0: "batch", 1: "sequence"},
+    "noi_source": {0: "batch", 1: "sequence"},
+    "uv": {0: "batch", 1: "sequence"},
+    "gen_spec": {0: "batch", 1: "sequence"},
+    "gen_phase": {0: "batch", 1: "sequence"},
+    "gen_x_0": {0: "batch", 1: "sequence"},
+    "gen_x_1": {0: "batch", 1: "sequence"},
 }
 
 logger.info("Starting ONNX export...")
@@ -67,7 +91,7 @@ try:
         (input_ids, input_lengths, ref_s, 1.0),  # Inputs as positional arguments
         "kokoro.onnx",
         input_names=["input_ids", "input_lengths", "ref_s", "speed"],
-        output_names=["audio", "pred_dur"],
+        output_names=["audio", "pred_dur"] + list(intermediates.keys()),
         dynamic_axes=dynamic_axes,
         opset_version=20,
         export_params=True,
@@ -88,7 +112,21 @@ try:
         "speed": np.array([1.0], dtype=np.float64)
     }
     ort_outputs = ort_session.run(None, ort_inputs)
-    logger.info("Inference with exported model successful")
+
+    # Compare audio output
+    torch_audio = output
+    onnx_audio = torch.tensor(ort_outputs[0])
+    audio_mse = (torch_audio - onnx_audio).pow(2).mean().item()
+    logger.info(f"MSE for audio waveform: {audio_mse:.5f}")
+
+    # Compare intermediate outputs
+    for name, torch_output in intermediates.items():
+        onnx_output = ort_outputs[list(intermediates.keys()).index(name) + 2]  # +2 to skip audio and pred_dur
+        onnx_output_tensor = torch.tensor(onnx_output)
+
+        # Calculate MSE
+        mse = (torch_output.cpu() - onnx_output_tensor).pow(2).mean().item()
+        logger.info(f"MSE for {name}: {mse:.5f}")
 
 except Exception as e:
     logger.error(f"Export failed: {str(e)}")
