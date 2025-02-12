@@ -6,6 +6,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from kokoro.custom_stft import CustomSTFT
+
 
 # https://github.com/yl4579/StyleTTS2/blob/main/Modules/utils.py
 def init_weights(m, mean=0.0, std=0.01):
@@ -18,17 +20,22 @@ def get_padding(kernel_size, dilation=1):
 
 
 class AdaIN1d(nn.Module):
-    def __init__(self, style_dim, num_features):
+    def __init__(self, style_dim, num_features, eps=1e-5):
         super().__init__()
-        self.norm = nn.InstanceNorm1d(num_features, affine=False)
-        self.fc = nn.Linear(style_dim, num_features*2)
+        self.eps = eps
+        self.fc = nn.Linear(style_dim, num_features * 2)
 
     def forward(self, x, s):
         h = self.fc(s)
         h = h.view(h.size(0), h.size(1), 1)
         gamma, beta = torch.chunk(h, chunks=2, dim=1)
-        return (1 + gamma) * self.norm(x) + beta
 
+        # Note: This could/should use normal nn.InstanceNorm1d, however
+        # input transposes from LSTM outputs throw onnx export through a loop, and it loses track of dimensionality, so this reshapes the input and runs the instance norm manually
+        mean = x.mean(dim=2, keepdim=True)
+        var = ((x - mean)**2).mean(dim=2, keepdim=True)
+        x_norm = (x - mean) / torch.sqrt(var + self.eps)
+        return (1.0 + gamma) * x_norm + beta
 
 class AdaINResBlock1(nn.Module):
     def __init__(self, channels, kernel_size=3, dilation=(1, 3, 5), style_dim=64):
@@ -253,7 +260,7 @@ class SourceModuleHnNSF(nn.Module):
 
 
 class Generator(nn.Module):
-    def __init__(self, style_dim, resblock_kernel_sizes, upsample_rates, upsample_initial_channel, resblock_dilation_sizes, upsample_kernel_sizes, gen_istft_n_fft, gen_istft_hop_size):
+    def __init__(self, style_dim, resblock_kernel_sizes, upsample_rates, upsample_initial_channel, resblock_dilation_sizes, upsample_kernel_sizes, gen_istft_n_fft, gen_istft_hop_size, disable_complex=False):
         super(Generator, self).__init__()
         self.num_kernels = len(resblock_kernel_sizes)
         self.num_upsamples = len(upsample_rates)
@@ -288,7 +295,11 @@ class Generator(nn.Module):
         self.ups.apply(init_weights)
         self.conv_post.apply(init_weights)
         self.reflection_pad = nn.ReflectionPad1d((1, 0))
-        self.stft = TorchSTFT(filter_length=gen_istft_n_fft, hop_length=gen_istft_hop_size, win_length=gen_istft_n_fft)
+        self.stft = (
+            CustomSTFT(filter_length=gen_istft_n_fft, hop_length=gen_istft_hop_size, win_length=gen_istft_n_fft)
+            if disable_complex
+            else TorchSTFT(filter_length=gen_istft_n_fft, hop_length=gen_istft_hop_size, win_length=gen_istft_n_fft)
+        )
 
     def forward(self, x, s, f0):
         with torch.no_grad():
@@ -382,7 +393,8 @@ class Decoder(nn.Module):
                  upsample_initial_channel,
                  resblock_dilation_sizes,
                  upsample_kernel_sizes,
-                 gen_istft_n_fft, gen_istft_hop_size):
+                 gen_istft_n_fft, gen_istft_hop_size,
+                 disable_complex=False):
         super().__init__()
         self.encode = AdainResBlk1d(dim_in + 2, 1024, style_dim)
         self.decode = nn.ModuleList()
@@ -395,7 +407,7 @@ class Decoder(nn.Module):
         self.asr_res = nn.Sequential(weight_norm(nn.Conv1d(512, 64, kernel_size=1)))
         self.generator = Generator(style_dim, resblock_kernel_sizes, upsample_rates, 
                                    upsample_initial_channel, resblock_dilation_sizes, 
-                                   upsample_kernel_sizes, gen_istft_n_fft, gen_istft_hop_size)
+                                   upsample_kernel_sizes, gen_istft_n_fft, gen_istft_hop_size, disable_complex=disable_complex)
 
     def forward(self, asr, F0_curve, N, s):
         F0 = self.F0_conv(F0_curve.unsqueeze(1))
