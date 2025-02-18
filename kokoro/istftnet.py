@@ -1,5 +1,6 @@
 # https://github.com/yl4579/StyleTTS2/blob/main/Modules/istftnet.py
 import math
+import uuid
 from scipy.signal import get_window
 from torch.nn.utils import weight_norm
 import numpy as np
@@ -23,15 +24,41 @@ def get_padding(kernel_size, dilation=1):
 class AdaIN1d(nn.Module):
     def __init__(self, style_dim, num_features):
         super().__init__()
-        self.norm = nn.InstanceNorm1d(num_features, affine=False)
+        # affine should be False, however there's a bug in the old torch.onnx.export (not newer dynamo) that causes the channel dimension to be lost if affine=False. When affine is true, there's additional learnably parameters. This shouldn't really matter setting it to True, since we're in inference mode
+        self.norm = nn.InstanceNorm1d(num_features, affine=True)
         self.fc = nn.Linear(style_dim, num_features*2)
+        self.style_dim = style_dim
+        self.num_features = num_features
 
     def forward(self, x, s):
         h = self.fc(s)
         h = h.view(h.size(0), h.size(1), 1)
         gamma, beta = torch.chunk(h, chunks=2, dim=1)
-        return (1 + gamma) * self.norm(x) + beta
+        print(f"AdaIN1d channel dimension: {x.shape[1]}, style_dim: {self.style_dim}, num_features: {self.num_features}")
+        # x.shape is [B, self.num_features, T]
+        # Make the channel dimension extremely explicit:
+        # B, _, T = x.shape
+        # x = x.view(B, self.num_features, T)  # Force the tracer to see it as (B, constant C, T)
+        norm = self.norm(x)
+        return (1 + gamma) * norm + beta
 
+class CustomAdaIN1d(nn.Module):
+    def __init__(self, style_dim, num_features, eps=1e-5):
+        super().__init__()
+        self.eps = eps
+        self.fc = nn.Linear(style_dim, num_features * 2)
+
+    def forward(self, x, s):
+        h = self.fc(s)
+        h = h.view(h.size(0), h.size(1), 1)
+        gamma, beta = torch.chunk(h, chunks=2, dim=1)
+
+        # Note: This could/should use normal nn.InstanceNorm1d, however
+        # input transposes from LSTM outputs throw onnx export through a loop, and it loses track of dimensionality, so this reshapes the input and runs the instance norm manually
+        mean = x.mean(dim=2, keepdim=True)
+        var = ((x - mean)**2).mean(dim=2, keepdim=True)
+        x_norm = (x - mean) / torch.sqrt(var + self.eps)
+        return (1.0 + gamma) * x_norm + beta
 
 class AdaINResBlock1(nn.Module):
     def __init__(self, channels, kernel_size=3, dilation=(1, 3, 5), style_dim=64):
